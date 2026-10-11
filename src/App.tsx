@@ -14,22 +14,27 @@ const LANGUAGES: LanguageOption[] = [
   { code: "fr-FR", name: "Tiếng Pháp" },
 ];
 
+interface DraftState {
+  text: string;
+  translated: string;
+  isTranslating: boolean;
+}
+
 export default function App() {
   const [transcripts, setTranscripts] = useState<TranscriptItem[]>([]);
+  const [draft, setDraft] = useState<DraftState | null>(null);
   const [currentSpeaker, setCurrentSpeaker] = useState<SpeakerId>("speaker1");
   const currentSpeakerRef = useRef<SpeakerId>("speaker1");
 
-  // FIX 1: Đảm bảo sử dụng ngoặc nhọn {} để hàm không ngầm trả về giá trị
-  useEffect(() => { 
-    currentSpeakerRef.current = currentSpeaker; 
+  useEffect(() => {
+    currentSpeakerRef.current = currentSpeaker;
   }, [currentSpeaker]);
 
-  const [sourceLang, setSourceLang] = useState<LanguageOption>(LANGUAGES[0]);
-  const [targetLang, setTargetLang] = useState<LanguageOption>(LANGUAGES[1]);
+  const [sourceLang, setSourceLang] = useState<LanguageOption>(LANGUAGES[1]); // Mặc định Anh -> Việt
+  const [targetLang, setTargetLang] = useState<LanguageOption>(LANGUAGES[0]);
   const sourceLangRef = useRef<LanguageOption>(sourceLang);
   const targetLangRef = useRef<LanguageOption>(targetLang);
 
-  // FIX 2: Bọc ngoặc an toàn
   useEffect(() => {
     sourceLangRef.current = sourceLang;
     targetLangRef.current = targetLang;
@@ -37,56 +42,84 @@ export default function App() {
 
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
-  const toastTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
+
+  // Chống race: chỉ nhận kết quả dịch nháp của yêu cầu mới nhất
+  const draftReqIdRef = useRef(0);
+  // Cache bản dịch nháp để khi chốt đúng đoạn đó thì khỏi dịch lại
+  const draftCacheRef = useRef<{ text: string; translated: string } | null>(null);
 
   const scrollToBottom = () => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   };
 
-  const handleSentenceComplete = useCallback(async (finalText: string) => {
+  // Ứng viên dịch sớm: dịch để hiện bản nháp, chưa khóa
+  const handleDraft = useCallback(async (text: string | null) => {
+    const reqId = ++draftReqIdRef.current;
+    if (!text) {
+      setDraft(null);
+      return;
+    }
+    // Giữ bản dịch tạm cũ trong lúc chờ để khỏi nhấp nháy
+    setDraft((prev) => ({ text, translated: prev?.translated ?? "", isTranslating: true }));
+
+    const translated = await translateSentence(text, sourceLangRef.current.code, targetLangRef.current.code);
+    if (reqId !== draftReqIdRef.current) return; // đã có nháp mới hơn hoặc đã chốt: bỏ kết quả cũ
+
+    if (translated !== text) draftCacheRef.current = { text, translated };
+    setDraft({ text, translated, isTranslating: false });
+  }, []);
+
+  // Đoạn đã chốt: tạo bản ghi chính thức và dịch đúng một lần
+  const handleCommit = useCallback(async (finalText: string) => {
+    // Vô hiệu hóa mọi yêu cầu dịch nháp đang bay, xóa nháp khỏi UI
+    draftReqIdRef.current++;
+    setDraft(null);
+
+    const cached = draftCacheRef.current;
+    draftCacheRef.current = null;
+
     const activeSpeaker = currentSpeakerRef.current;
     const currentSource = sourceLangRef.current;
     const currentTarget = targetLangRef.current;
     const timestamp = new Date().toTimeString().split(" ")[0];
     const newItemId = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 
-    const newItem: TranscriptItem = {
-      id: newItemId,
-      speaker: activeSpeaker,
-      original: finalText,
-      translated: '',
-      timestamp,
-      isTranslating: true,
-    };
+    if (cached && cached.text === finalText) {
+      setTranscripts((prev) => [
+        ...prev,
+        { id: newItemId, speaker: activeSpeaker, original: finalText, translated: cached.translated, timestamp, isTranslating: false },
+      ]);
+      return;
+    }
 
-    setTranscripts((prev) => [...prev, newItem]);
+    setTranscripts((prev) => [
+      ...prev,
+      { id: newItemId, speaker: activeSpeaker, original: finalText, translated: "", timestamp, isTranslating: true },
+    ]);
 
     try {
-      const translated = await translateSentence(
-        finalText,
-        currentSource.code,
-        currentTarget.code
-      );
+      const translated = await translateSentence(finalText, currentSource.code, currentTarget.code);
       setTranscripts((prev) =>
-        prev.map((item) => item.id === newItemId ? { ...item, translated, isTranslating: false } : item)
+        prev.map((item) => (item.id === newItemId ? { ...item, translated, isTranslating: false } : item))
       );
     } catch {
       setTranscripts((prev) =>
-        prev.map((item) => item.id === newItemId ? { ...item, translated: finalText, isTranslating: false } : item)
+        prev.map((item) => (item.id === newItemId ? { ...item, translated: finalText, isTranslating: false } : item))
       );
     }
   }, []);
 
   const { isListening, interimTranscript, error: speechError, isSupported, startListening, stopListening, resetError } = useSpeechRecognition({
     lang: sourceLang.code,
-    onSentenceComplete: handleSentenceComplete,
+    onDraft: handleDraft,
+    onCommit: handleCommit,
   });
 
-  // FIX 3: Tắt implicit return, sử dụng cấu trúc {} block rõ ràng
   useEffect(() => {
     scrollToBottom();
-  }, [transcripts, interimTranscript]);
+  }, [transcripts, interimTranscript, draft]);
 
   const toggleSpeaker = useCallback(() => setCurrentSpeaker((prev) => (prev === "speaker1" ? "speaker2" : "speaker1")), []);
 
@@ -116,7 +149,6 @@ export default function App() {
     window.speechSynthesis.speak(utterance);
   };
 
-  // FIX 4: Đảm bảo useEffect này chỉ trả về duy nhất một function dọn dẹp
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       const activeTag = (event.target as HTMLElement)?.tagName;
@@ -126,9 +158,9 @@ export default function App() {
         toggleSpeaker();
       }
     };
-    
+
     window.addEventListener("keydown", handleKeyDown);
-    
+
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
     };
@@ -145,7 +177,7 @@ export default function App() {
       setToastMessage("Đã tải file Excel!");
       toastTimerRef.current = setTimeout(() => setToastMessage(null), 3000);
     } catch (err: unknown) {
-      const errMsg = err instanceof Error ? err.message : 'Lỗi xuất file Excel';
+      const errMsg = err instanceof Error ? err.message : "Lỗi xuất file Excel";
       alert(errMsg);
     }
   };
@@ -161,7 +193,7 @@ export default function App() {
             <div>
               <div className="flex items-center gap-2">
                 <span className="font-semibold text-sm tracking-tight text-white">Voice Translator</span>
-                <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">Smart Buffer + Libre</span>
+                <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">Draft + Commit</span>
               </div>
               <p className="text-[11px] text-slate-500 font-normal">Song ngữ trực tiếp • Nhấn <kbd className="px-1 py-0.2 bg-white/[0.06] rounded border border-white/[0.08]">Space</kbd> đổi Speaker</p>
             </div>
@@ -194,7 +226,7 @@ export default function App() {
 
       {(!isSupported || speechError) && (
         <div className="bg-amber-500/10 border-b border-amber-500/20 px-4 py-2 text-xs text-amber-300 flex items-center justify-between">
-          <div className="flex items-center gap-2 max-w-7xl mx-auto w-full"><AlertCircle className="w-4 h-4 text-amber-400 shrink-0" /><span>{!isSupported ? 'Trình duyệt không hỗ trợ Web Speech API.' : speechError}</span>{speechError && <button onClick={resetError} className="ml-auto underline">Đóng</button>}</div>
+          <div className="flex items-center gap-2 max-w-7xl mx-auto w-full"><AlertCircle className="w-4 h-4 text-amber-400 shrink-0" /><span>{!isSupported ? "Trình duyệt không hỗ trợ Web Speech API." : speechError}</span>{speechError && <button onClick={resetError} className="ml-auto underline">Đóng</button>}</div>
         </div>
       )}
       {toastMessage && (
@@ -250,6 +282,7 @@ export default function App() {
             </div>
           ))}
 
+          {/* Dòng đang nói: cột trái là transcript chưa chốt, cột phải là bản dịch nháp */}
           {interimTranscript && (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <div className="bg-[#131722]/20 border border-indigo-500/20 rounded-2xl p-4">
@@ -258,6 +291,18 @@ export default function App() {
                   <span className="text-[11px] text-indigo-400/80 flex items-center gap-1.5 font-medium"><span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-ping" />Đang nghe & phân tích...</span>
                 </div>
                 <p className="text-sm text-slate-400 italic font-light leading-relaxed">"{interimTranscript}"</p>
+              </div>
+
+              <div className="bg-[#131722]/20 border border-dashed border-amber-500/25 rounded-2xl p-4">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-[10px] font-medium text-amber-400/80 uppercase">Bản dịch tạm</span>
+                  {draft?.isTranslating && <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />}
+                </div>
+                {draft && draft.translated ? (
+                  <p className="text-sm text-amber-200/70 italic leading-relaxed">{draft.translated}</p>
+                ) : (
+                  <p className="text-xs text-slate-600">Chờ đủ ý để dịch nháp...</p>
+                )}
               </div>
             </div>
           )}

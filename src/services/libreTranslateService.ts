@@ -17,7 +17,7 @@ export async function translateSentence(
   if (source === target) return trimmed;
 
   try {
-    const response = await fetch('/api-translate/translate', {
+    const response = await fetch('/api/translate', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -31,13 +31,13 @@ export async function translateSentence(
     });
 
     if (!response.ok) {
-      throw new Error(`LibreTranslate HTTP error! status: ${response.status}`);
+      throw new Error(`Proxy HTTP error! status: ${response.status}`);
     }
 
     const data = await response.json();
     return data.translatedText || trimmed;
   } catch (error) {
-    console.error('Lỗi khi gọi LibreTranslate self-host:', error);
+    console.error('Lỗi khi gọi qua Vercel Proxy:', error);
     return trimmed; // Trả lại câu gốc nếu dịch lỗi
   }
 }
