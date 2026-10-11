@@ -15,6 +15,7 @@ const ai = apiKey ? new GoogleGenAI({ apiKey }) : null;
 
 // Lựa chọn model tối ưu độ trễ thấp nhất và chi phí phù hợp nhất cho hội thoại trực tiếp
 const FLASH_MODEL = 'gemini-3-flash-preview';
+// const FLASH_MODEL = 'gemini-2.5-flash-lite';
 /**
  * Dịch một câu thoại từ ngôn ngữ nguồn sang ngôn ngữ đích theo thời gian thực.
  *

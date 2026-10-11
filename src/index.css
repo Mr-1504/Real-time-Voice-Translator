@@ -1,6 +1,4 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
 
 /* Thiết lập kiểu nền và thanh cuộn mượt cho giao diện song song */
 html, body, #root {
