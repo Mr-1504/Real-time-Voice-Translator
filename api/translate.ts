@@ -1,20 +1,31 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  // Chỉ chấp nhận request POST
+  // --- 1. BẬT CORS (Rất quan trọng để không bị chặn bởi trình duyệt) ---
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.setHeader('Access-Control-Allow-Origin', '*'); 
+  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
+  res.setHeader(
+    'Access-Control-Allow-Headers',
+    'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version'
+  );
+
+  if (req.method === 'OPTIONS') {
+    res.status(200).end();
+    return;
+  }
+
   if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method Not Allowed' });
+    return res.status(405).json({ error: 'Method Not Allowed. Chỉ hỗ trợ POST.' });
   }
 
   try {
     const backendUrl = process.env.TRANSLATE_API_URL;
     
     if (!backendUrl || backendUrl.trim() === '') {
-      console.error('Lỗi: Chưa cấu hình biến TRANSLATE_API_URL trên Vercel');
-      return res.status(500).json({ error: 'Missing Environment Variable: TRANSLATE_API_URL' });
+      return res.status(500).json({ error: 'Chưa cấu hình biến TRANSLATE_API_URL' });
     }
 
-    // --- BƯỚC 3: THỰC THI FETCH API ---
     const response = await fetch(backendUrl, {
       method: 'POST',
       headers: {
@@ -26,14 +37,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const responseText = await response.text();
 
     if (!response.ok) {
-      console.error(`Backend trả về mã lỗi ${response.status}:`, responseText);
+      console.error(`LibreTranslate trả về mã lỗi ${response.status}:`, responseText);
       return res.status(response.status).json({ 
         error: `Backend Error: ${response.status}`, 
         details: responseText 
       });
     }
 
-    // Chuyển đổi an toàn sang JSON
     const data = JSON.parse(responseText);
     return res.status(200).json(data);
 
