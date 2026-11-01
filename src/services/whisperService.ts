@@ -1,46 +1,92 @@
-export interface WhisperResult {
-  text: string;
+export interface RealtimeTranslationResult {
+  type: "interim_translation" | "final_result";
+  original: string;
+  translated: string;
+  lang: "vi" | "en";
 }
 
-/**
- * Gửi file ghi âm (Blob) sang Whisper Server để nhận diện hoặc dịch
- * @param audioBlob Dữ liệu âm thanh từ MediaRecorder
- * @param task 'transcribe' (chỉ gỡ băng + dấu câu) hoặc 'translate' (dịch sang tiếng Anh)
- * @param language Mã ngôn ngữ ('vi' hoặc 'en')
- */
-export async function processAudioWithWhisper(
-  audioBlob: Blob,
-  task: 'transcribe' | 'translate' = 'transcribe',
-  language?: string
-): Promise<string> {
-  const formData = new FormData();
-  formData.append('file', audioBlob, 'audio.wav');
-  formData.append('model', 'base');
-  formData.append('response_format', 'json');
+class LocalAIClient {
+  private ws: WebSocket | null = null;
+  private onResultCallback: ((data: RealtimeTranslationResult) => void) | null =
+    null;
+  private wsUrl: string;
 
-  // Endpoint chuẩn OpenAI: /v1/audio/transcriptions hoặc /v1/audio/translations
-  const endpoint = task === 'translate' 
-    ? '/api-whisper/v1/audio/translations' 
-    : '/api-whisper/v1/audio/transcriptions';
-
-  if (language && task === 'transcribe') {
-    formData.append('language', language);
+  constructor() {
+    this.wsUrl =
+      import.meta.env.AI_WS_URL ||
+      "ws://localhost:3000/ws/translate";
   }
 
-  try {
-    const res = await fetch(endpoint, {
-      method: 'POST',
-      body: formData,
-    });
+  connect(onResult: (data: RealtimeTranslationResult) => void) {
+    this.onResultCallback = onResult;
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) return;
 
-    if (!res.ok) {
-      throw new Error(`Whisper HTTP error: ${res.status}`);
+    this.ws = new WebSocket(this.wsUrl);
+
+    this.ws.onopen = () => {
+      console.log("🔗 Đã kết nối tới PhoWhisper & VinAI Translate Server");
+    };
+
+    this.ws.onmessage = (event) => {
+      try {
+        const data: RealtimeTranslationResult = JSON.parse(event.data);
+        if (this.onResultCallback) {
+          this.onResultCallback(data);
+        }
+      } catch (err) {
+        console.error("Lỗi parse kết quả từ AI Server:", err);
+      }
+    };
+
+    this.ws.onclose = () => {
+      console.log("⚠️ Ngắt kết nối AI Server, thử kết nối lại sau 2s...");
+      setTimeout(() => {
+        if (this.onResultCallback) this.connect(this.onResultCallback);
+      }, 2000);
+    };
+  }
+
+  /**
+   * Gửi đoạn âm thanh Float32Array (16kHz) ngay khi người nói vừa ngắt nhịp thở
+   */
+  sendAudioChunk(audioFloat32: Float32Array, lang: "vi" | "en") {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    this.ws.send(
+      JSON.stringify({
+        type: "audio",
+        lang,
+        audio: Array.from(audioFloat32),
+      }),
+    );
+  }
+
+  /**
+   * Gửi text tạm (Interim) để dịch nháp tức thì khi người dùng vẫn đang nói
+   */
+  sendInterimText(text: string, lang: "vi" | "en") {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN || !text.trim())
+      return;
+    this.ws.send(
+      JSON.stringify({
+        type: "text",
+        lang,
+        text,
+      }),
+    );
+  }
+
+  disconnect() {
+    this.onResultCallback = null;
+    if (this.ws) {
+      if (
+        this.ws.readyState === WebSocket.OPEN ||
+        this.ws.readyState === WebSocket.CONNECTING
+      ) {
+        this.ws.close();
+      }
+      this.ws = null;
     }
-
-    const data: WhisperResult = await res.json();
-    return data.text.trim();
-  } catch (error) {
-    console.error('Lỗi gọi Whisper:', error);
-    return '';
   }
 }
+
+export const localAIClient = new LocalAIClient();
